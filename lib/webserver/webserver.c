@@ -436,6 +436,12 @@ void webserver_init(void) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wcfg));
   ESP_ERROR_CHECK(esp_wifi_start());
   
+  // Reduce WiFi TX power to MINIMUM to prevent overheating (impacts IMU readings)
+  // Default: 20dBm (100mW), Reduced: 2dBm (1.6mW) = MINIMUM POWER
+  // Range ~8-10m only, but ZERO heat from WiFi
+  ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(8)); // 8 = 2dBm (units are 0.25dBm, so 8*0.25=2dBm)
+  
   printf("WiFi Started! SSID: %s, Pass: %s\n", WIFI_SSID, WIFI_PASS);
+  printf("WiFi TX Power: 2dBm (MINIMUM - for zero heat)\n");
   printf("Webserver listening on http://192.168.4.1\n");
 }

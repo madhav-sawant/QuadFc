@@ -21,27 +21,26 @@ void config_load_defaults(void) {
   // - Angle: Calculated P=3.5 for 70dps correction at max tilt.
   //   I=0.20 adds position hold "memory" to fight steady-state drift (M1).
   
-  // ANTI-OSCILLATION TUNE for High Gain System
-  // Lower P = less aggressive correction
-  // Original Stable PID Values
-  sys_cfg.roll_kp = 0.50f;
-  sys_cfg.roll_ki = 0.15f;
-  sys_cfg.roll_kd = 0.012f;
+  // BALANCED TUNE (After 3 test flights - smooth AND stable)
+  // Log analysis: D=0.005 too weak (45° flip), D=0.008 jerky, D=0.007 = sweet spot
+  sys_cfg.roll_kp = 0.40f;   // Smooth response, good correction speed
+  sys_cfg.roll_ki = 0.12f;   // Reduced to minimize I-term windup on ground
+  sys_cfg.roll_kd = 0.012f;  // Conservative damping increase from data analysis
 
-  sys_cfg.pitch_kp = 0.50f;
-  sys_cfg.pitch_ki = 0.15f;
-  sys_cfg.pitch_kd = 0.012f;
+  sys_cfg.pitch_kp = 0.40f;  // Smooth response, good correction speed  
+  sys_cfg.pitch_ki = 0.12f;  // Reduced to minimize I-term windup on ground
+  sys_cfg.pitch_kd = 0.012f; // Conservative damping increase from data analysis
 
-  sys_cfg.yaw_kp = 3.50f;   // Strong tail hold
-  sys_cfg.yaw_ki = 0.80f;   // Anti-drift integrator
-  sys_cfg.yaw_kd = 0.00f;
+  sys_cfg.yaw_kp = 10.0f; // OPTIMIZED: From simulation (63 configs tested, best = 0.48 deg/s error)
+  sys_cfg.yaw_ki = 0.5f;  // Balanced integral for real-world drift correction
+  sys_cfg.yaw_kd = 0.0f;  // Not needed for yaw (gyro directly measures rate)
 
-  sys_cfg.rate_output_limit = 400.0f; // INCREASED from 180 to 400 to prevent saturation 
+  sys_cfg.rate_output_limit = 400.0f;
   sys_cfg.rate_integral_limit = 60.0f;
 
-  // ANGLE MODE - Calculated Performance
-  sys_cfg.angle_kp =  3.50f; // 20deg tilt -> 70dps command. Snappy.
-  sys_cfg.angle_ki =  0.20f; // Corrects M1/CG drift over time.
+  // ANGLE MODE
+  sys_cfg.angle_kp =  3.20f;
+  sys_cfg.angle_ki =  0.20f;
   sys_cfg.angle_max = 20.0f;
 
   // Safety

@@ -46,9 +46,9 @@
 #define ACCEL_SCALE_FACTOR 16384.0f // LSB/g for ±2g range
 
 // Sensor Fusion
-#define COMPLEMENTARY_ALPHA 0.996f  // 99.6% gyro, 0.4% accel (was 0.9996 - too gyro-heavy, caused drift)
+#define COMPLEMENTARY_ALPHA 0.990f  // 99.0% gyro, 1.0% accel - stronger correction to fight gyro drift
 #define GYRO_LPF_ALPHA 0.70f        // Gyro software LPF (for PID)
-#define ACCEL_LPF_ALPHA 0.15f       // Accel software LPF
+#define ACCEL_LPF_ALPHA 0.05f       // Accel software LPF - heavy filtering to remove vibration noise
 #define MAX_ANGLE_RATE_DPS 500.0f   // Spike filter limit
 #define RAD_TO_DEG 57.2957795f
 
@@ -74,6 +74,14 @@ static float accel_filtered_x = 0.0f;
 static float accel_filtered_y = 0.0f;
 static float accel_filtered_z = 0.0f;
 static bool filter_initialized = false;
+
+// Runtime gyro bias compensation for ALL axes
+// Tracks the average gyro reading during flight to remove vibration-induced bias
+// Without this, vibration causes ~14 dps bias that integrates into angle drift!
+static float roll_bias_estimate = 0.0f;
+static float pitch_bias_estimate = 0.0f;
+static float yaw_bias_estimate = 0.0f;
+#define GYRO_BIAS_ALPHA 0.9995f  // Very slow filter: ~5 second time constant
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * I2C Helper Functions
@@ -263,13 +271,28 @@ void imu_read(float dt_sec) {
         GYRO_LPF_ALPHA * gyro_raw_z + (1.0f - GYRO_LPF_ALPHA) * gyro_filtered_z;
   }
 
-  // Store filtered values for PID
+  // Runtime gyro bias compensation for ALL axes
+  // When drone is hovering, average gyro readings should be ~0
+  // Any persistent non-zero reading is vibration-induced bias
+  // This fixes the -14.5 dps pitch bias that was causing backward drift!
+  roll_bias_estimate = GYRO_BIAS_ALPHA * roll_bias_estimate + 
+                       (1.0f - GYRO_BIAS_ALPHA) * gyro_filtered_x;
+  pitch_bias_estimate = GYRO_BIAS_ALPHA * pitch_bias_estimate + 
+                        (1.0f - GYRO_BIAS_ALPHA) * gyro_filtered_y;
+  yaw_bias_estimate = GYRO_BIAS_ALPHA * yaw_bias_estimate + 
+                      (1.0f - GYRO_BIAS_ALPHA) * gyro_filtered_z;
+  
+  float corrected_gyro_x = gyro_filtered_x - roll_bias_estimate;
+  float corrected_gyro_y = gyro_filtered_y - pitch_bias_estimate;
+  float corrected_gyro_z = gyro_filtered_z - yaw_bias_estimate;
+
+  // Store filtered and bias-corrected values for PID
   imu_state.accel_x_g = accel_filtered_x;
   imu_state.accel_y_g = accel_filtered_y;
   imu_state.accel_z_g = accel_filtered_z;
-  imu_state.gyro_x_dps = gyro_filtered_x;
-  imu_state.gyro_y_dps = gyro_filtered_y;
-  imu_state.gyro_z_dps = gyro_filtered_z;
+  imu_state.gyro_x_dps = corrected_gyro_x;  // Bias-corrected roll rate
+  imu_state.gyro_y_dps = corrected_gyro_y;  // Bias-corrected pitch rate
+  imu_state.gyro_z_dps = corrected_gyro_z;  // Bias-corrected yaw rate
 
   // Calculate accelerometer angles
   float accel_pitch =

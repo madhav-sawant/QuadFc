@@ -6,6 +6,7 @@
 #include "angle_control.h"
 #include "../config/config.h"
 
+
 // Internal state
 static float i_roll_accum = 0.0f;
 static float i_pitch_accum = 0.0f;
@@ -14,7 +15,8 @@ static angle_output_t output;
 // Constants from main.c
 #define MAX_ANGLE_I 30.0f
 #define MAX_ANGLE_RATE 150.0f
-#define ANGLE_I_THROTTLE_MIN 1200
+#define ANGLE_I_THROTTLE_MIN 1100  // Single threshold for all PIDs
+#define ANGLE_I_TILT_THRESHOLD 2.0f  // Only accumulate if tilted >2°
 
 void angle_control_init(void) {
   i_roll_accum = 0.0f;
@@ -29,26 +31,41 @@ void angle_control_update(float target_roll, float target_pitch,
   float roll_error = target_roll - actual_roll;
   float pitch_error = target_pitch - actual_pitch;
 
-  // I-term logic
+  // I-term logic: Optimal approach
   if (!armed) {
-    // Only reset when disarmed
+    // Reset when disarmed
     i_roll_accum = 0.0f;
     i_pitch_accum = 0.0f;
   } else if (sys_cfg.angle_ki > 0.0f && throttle > ANGLE_I_THROTTLE_MIN) {
-    // Accumulate when armed and throttle high enough
-    float max_i_accum = MAX_ANGLE_I / sys_cfg.angle_ki;
+    // Smart accumulation strategy:
+    // 1. If tilted >2° → definitely accumulate (drone is clearly off-level)
+    // 2. If throttle >1300us → accumulate (likely airborne, even if level)
+    // 3. Otherwise → don't accumulate (sitting on ground at low throttle)
+    
+    float abs_roll = actual_roll < 0 ? -actual_roll : actual_roll;
+    float abs_pitch = actual_pitch < 0 ? -actual_pitch : actual_pitch;
+    
+    bool drone_is_tilted = (abs_roll > ANGLE_I_TILT_THRESHOLD || 
+                           abs_pitch > ANGLE_I_TILT_THRESHOLD);
+    bool throttle_high = (throttle > 1300);  // Likely airborne at >1300us
+    
+    if (drone_is_tilted || throttle_high) {
+      // Accumulate I-term (drone is flying or needs correction)
+      float max_i_accum = MAX_ANGLE_I / sys_cfg.angle_ki;
 
-    i_roll_accum += roll_error * dt_sec;
-    if (i_roll_accum > max_i_accum)
-      i_roll_accum = max_i_accum;
-    if (i_roll_accum < -max_i_accum)
-      i_roll_accum = -max_i_accum;
+      i_roll_accum += roll_error * dt_sec;
+      if (i_roll_accum > max_i_accum)
+        i_roll_accum = max_i_accum;
+      if (i_roll_accum < -max_i_accum)
+        i_roll_accum = -max_i_accum;
 
-    i_pitch_accum += pitch_error * dt_sec;
-    if (i_pitch_accum > max_i_accum)
-      i_pitch_accum = max_i_accum;
-    if (i_pitch_accum < -max_i_accum)
-      i_pitch_accum = -max_i_accum;
+      i_pitch_accum += pitch_error * dt_sec;
+      if (i_pitch_accum > max_i_accum)
+        i_pitch_accum = max_i_accum;
+      if (i_pitch_accum < -max_i_accum)
+        i_pitch_accum = -max_i_accum;
+    }
+    // else: drone is flat (on ground), don't accumulate
   } else {
     // Hold I-term when throttle is low (prevent windup on ground, but don't lose trim in flight)
     // Do nothing - just don't add to accumulator

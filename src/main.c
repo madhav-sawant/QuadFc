@@ -70,11 +70,11 @@ static uint16_t debug_vbat = 0;  // Battery voltage in millivolts
 
 ////////////////////////// NEW BATTERY CHECKER//////////////////////
 
-   static void batter_task (void *arg)
+   static void battery_task (void *arg)
    {
     while (1)
     {
-    debug_vbat =adc_read_battery_voltg;
+    debug_vbat =adc_read_battery_voltg();
     bool low_bat=(debug_vbat>0&&debug_vbat<sys_cfg.low_bat_threshold);
     if (low_bat)
     {

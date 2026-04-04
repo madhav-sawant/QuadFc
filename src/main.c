@@ -68,6 +68,32 @@ static uint16_t rc_center_pitch = 1500;
 static uint16_t debug_motors[4]; // Current motor PWM values for logging
 static uint16_t debug_vbat = 0;  // Battery voltage in millivolts
 
+////////////////////////// NEW BATTERY CHECKER//////////////////////
+
+   static void batter_task (void *arg)
+   {
+    while (1)
+    {
+    debug_vbat =adc_read_battery_voltg;
+    bool low_bat=(debug_vbat>0&&debug_vbat<sys_cfg.low_bat_threshold);
+    if (low_bat)
+    {
+      if (system_armed)
+      {
+         system_armed=false;
+         mixer_arm(false);
+      }
+      gpio_set_level(LED_PIN,1);
+    }
+    else
+    {
+      gpio_set_level(LED_PIN,system_armed?1:0);
+    }
+      vTaskDelay(pdMS_TO_TICKS(4));
+    }
+    
+   }
+
 /* =============================================================================
  * CONTROL LOOP TASK
  * This is where the magic happens - runs at 250Hz on CPU core 1
@@ -461,13 +487,13 @@ void app_main(void) {
   rate_control_init();
   angle_control_init();
   xTaskCreatePinnedToCore(control_loop_task, "control", 4096, NULL, 24, NULL, 1);
+  xTaskCreatePinnedToCore(batter_task, "battery_monitor", 2048, NULL, 5, NULL, 0);
 
   // -------------------------------------------------------------------------
   // Main loop - handles arming, safety, and housekeeping
   // Runs at ~100Hz on Core 0
   // -------------------------------------------------------------------------
   static int rx_fail = 0;   // Counter for RX failsafe
-  static int bat_div = 0;   // Divider for battery check (1Hz)
 
   while (1) {
     // Check if receiver is connected (timeout-based)
@@ -521,33 +547,37 @@ void app_main(void) {
     // Battery Monitoring (1Hz)
     // LiPo batteries don't like being over-discharged
     // -----------------------------------------------------------------------
-    if (++bat_div >= 100) {
-      bat_div = 0;
-      debug_vbat = adc_read_battery_voltg();
 
-      if (debug_vbat > 0 && debug_vbat < sys_cfg.low_bat_threshold) {
-        // Low battery warning - printf removed for timing
-      }
-    }
 
-    // -----------------------------------------------------------------------
-    // LED Status Indication
-    // - Solid ON = low battery (also disarms!)
-    // - Solid ON = armed
-    // - Off = disarmed
-    // -----------------------------------------------------------------------
-    bool low_bat = (debug_vbat > 0 && debug_vbat < sys_cfg.low_bat_threshold);
-    if (low_bat) {
-      // Low battery - DISARM and turn LED solid ON
-      if (system_armed) {
-        system_armed = false;
-        mixer_arm(false);
-        // printf removed for timing
-      }
-      gpio_set_level(LED_PIN, 1);  // Solid ON for low battery
-    } else {
-      gpio_set_level(LED_PIN, system_armed ? 1 : 0);
-    }
+    /////////////////////////////////////// OLD BATTERY CHECKER///////////////////////////////////////
+    // if (++bat_div >= 100) {
+    //   bat_div = 0;
+    //   debug_vbat = adc_read_battery_voltg();
+
+    //   if (debug_vbat > 0 && debug_vbat < sys_cfg.low_bat_threshold) {
+    //     // Low battery warning - printf removed for timing
+    //   }
+    // }
+
+    // // -----------------------------------------------------------------------
+    // // LED Status Indication
+    // // - Solid ON = low battery (also disarms!)
+    // // - Solid ON = armed
+    // // - Off = disarmed
+    // // -----------------------------------------------------------------------
+    // bool low_bat = (debug_vbat > 0 && debug_vbat < sys_cfg.low_bat_threshold);
+    // if (low_bat) {
+    //   // Low battery - DISARM and turn LED solid ON
+    //   if (system_armed) {
+    //     system_armed = false;
+    //     mixer_arm(false);
+    //     // printf removed for timing
+    //   }
+    //   gpio_set_level(LED_PIN, 1);  // Solid ON for low battery
+    // } else {
+    //   gpio_set_level(LED_PIN, system_armed ? 1 : 0);
+    // }
+
 
     // -----------------------------------------------------------------------
     // Emergency Stop

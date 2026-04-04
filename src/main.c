@@ -487,7 +487,7 @@ void app_main(void) {
   rate_control_init();
   angle_control_init();
   xTaskCreatePinnedToCore(control_loop_task, "control", 4096, NULL, 24, NULL, 1);
-  xTaskCreatePinnedToCore(batter_task, "battery_monitor", 2048, NULL, 5, NULL, 0);
+  xTaskCreatePinnedToCore(battery_task, "battery_monitor", 2048, NULL, 5, NULL, 0);
 
   // -------------------------------------------------------------------------
   // Main loop - handles arming, safety, and housekeeping

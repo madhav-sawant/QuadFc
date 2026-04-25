@@ -2,13 +2,13 @@
 
 A custom flight controller firmware built from scratch on ESP32. Inspired by Betaflight and ArduPilot, but designed for learning and experimentation.
 
+**Status:** Angle mode flight tested (Control loops active, tuning in progress). Future updates in progress.
+
 ---
 
 ## Demo
 
 ![Drone Demo](assets/QuadFc.gif)
-
-
 
 ---
 
@@ -28,7 +28,7 @@ If you watch YouTube tutorials (like Joop Brokking or Carbon Aeronautics) where 
 
 If you want easier tuning with lower mechanical gain:
 - Use 1000KV motors
-- Use 8045 props (8-inch)
+- Use 8045 props (10-inch)
 - Same F450 frame
 
 Also note: This firmware is written in **pure C** using the ESP-IDF framework, not Arduino C++.
@@ -48,53 +48,15 @@ Also note: This firmware is written in **pure C** using the ESP-IDF framework, n
 - Low battery warning with LED indication
 - PPM receiver input - works with FlySky and similar transmitters
 
-**Note:** WiFi webserver and Blackbox logging are enabled by default. The webserver creates an access point called **'QuadPID'** (Password: `12345678`) for configuration at `http://192.168.4.1`. Blackbox logs flight data at ~83Hz for post-flight analysis.
+**WiFi Connection:**
+- **SSID:** `QuadPID`
+- **Password:** `12345678`
+- **IP Address:** `192.168.4.1`
 
-To make the system more optimized (smaller firmware size, less CPU usage), you can disable the WiFi and Blackbox modules by commenting out the following in `src/main.c`:
-
-1.  **Includes:** `blackbox.h` and `webserver.h`
-2.  **Initialization:** `blackbox_init()` and `webserver_init()` (in `app_main`)
-3.  **Logging Loop:** The entire `blackbox_log` if/else block (in `control_loop_task`)
-4.  **Arming Logic:** `blackbox_start()`, `blackbox_stop()`, and `blackbox_clear()` calls
+Connect to this network to access the web interface for PID tuning and Blackbox log downloading.
 
 ---
 
-
-## Blackbox Logging for Systematic Tuning
-
-![Blackbox Diagram](assets/Blackbox_Blockdaigram.png)
-
-I built the Blackbox logging system to make PID tuning **systematic and efficient**.
-
-When tuning a drone, relying solely on visual observation ("it looks like it's wobbling") isn't enough. You need to know exactly what the flight controller is *thinking* versus what the drone is *doing*.
-
-The Blackbox records high-frequency flight data, allowing me to see the noise, compare target vs. actual rates, and diagnose issues with data rather than guesswork. **This idea was taken from the "Black Box" (Flight Data Recorder) used in airplanes to analyze incidents.**
-
-### Analyzing Data
-
-You can visualize the flight performance using the included Python script. This plots the Target (Stick Input) vs Reality (Gyro) to help with PID tuning.
-
-1.  Download the `blackbox.csv` from the Webserver (`http://192.168.4.1/blackbox`)
-2.  Run the analyzer script:
-
-```bash
-python tools/log_analyzer.py blackbox.csv
-```
-
-**Try it out:** I've included a real flight log sample so you can see how it works:
-```bash
-python tools/log_analyzer.py assets/blackbox.csv
-```
-
-This will generate a flight logic overview graph showing:
-1.  **Goal vs Reality:** How well the drone followed your stick commands.
-2.  **PID Effort:** How hard the controller worked to correct errors.
-3.  **Motor Output:** What the motors actually did.
-4.  **Automated Diagnosis:** The script also performs basic health checks (vibration, oscillation, saturation) and prints a report.
-
-*Note: This analyzer is a helper tool to point you in the right direction. It can detect obvious issues like heavy excessive vibration or severe oscillations, but fine-tuning still requires pilot judgement and patience!*
-
----
 
 ## Hardware Used
 
@@ -152,6 +114,10 @@ CW  = Clockwise
 You'll need PlatformIO installed (VS Code extension works great).
 
 ```bash
+# Clone the repo
+git clone https://github.com/madhav-sawant/QuadFC.git
+cd QuadFC
+
 # Build and upload
 pio run --target upload
 
@@ -188,59 +154,50 @@ To disarm, flip the arm switch back to LOW.
 ## System Architecture
 
 ```
-                                  CONTROL LOOP (250Hz)
+                           CONTROL LOOP (250Hz)
 
-  INPUTS                            PROCESSING                           OUTPUTS
-  ──────                            ──────────                           ───────
-
-                             ┌─────────────────┐
-  ┌─────────┐                │  COMPLEMENTARY  │
-  │ MPU6050 │──Accel+Gyro───▶│     FILTER      │───Current Angle───┐
-  │ (Sensor)│                └─────────────────┘                   │
-  └────┬────┘                                                      ▼
-       │                                                   ┌──────────────┐
-       │                                                   │  ANGLE LOOP  │
-       │                 ┌──────────────┐                  │     (PI)     │
-       │                 │   RECEIVER   │───Roll Stick────▶│              │
-       │                 │    (PPM)     │───Pitch Stick───▶│ Roll & Pitch │
-       │                 │              │                  └──────┬───────┘
-       │                 │  Channel 0   │                         │
-       │                 │  Channel 1   │                   Target Rate
-       │                 │  Channel 2   │                    (Roll/Pitch)
-       │                 │  Channel 3   │                         │
-       │                 └──────┬───────┘                         ▼
-       │                        │                          ┌──────────────┐
-       │   Gyro Rates           │                          │  RATE LOOP   │
-       └────────────────────────┼─────────────────────────▶│    (PID)     │
-                                │                          │              │
-                                ├───Yaw Stick─────────────▶│ Roll         │
-                                │   (direct to Rate Loop)  │ Pitch        │
-                                │                          │ Yaw          │
-                                │                          └──────┬───────┘
-                                │                                 │
-                                │                           Corrections
-                                │                          (Roll/Pitch/Yaw)
-                                │                                 │
-                                │                                 ▼
-                                │                          ┌──────────────┐      ┌────────┐
-                                └───Throttle──────────────▶│    MIXER     │─────▶│ MOTORS │
-                                    (direct to Mixer)      │   (Quad-X)   │      │M1 M2   │
-                                                           └──────────────┘      │M3 M4   │
-                                                                                 └────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│   ┌─────────────┐      ┌───────────────┐                                 │
+│   │   MPU6050   │      │ COMPLEMENTARY │     Current                     │
+│   │  Accel+Gyro │─────▶│    FILTER     │────▶ Angle                      │
+│   │             │      └───────────────┘        │                        │
+│   └──────┬──────┘                               ▼                        │
+│          │                              ┌─────────────┐                  │
+│          │                              │  ANGLE LOOP │    Target        │
+│          │         ┌───────────────┐    │    (PI)     │───▶ Rate         │
+│          │         │   RECEIVER    │───▶│             │      │           │
+│          │         │     (PPM)     │    └─────────────┘      │           │
+│          │         └───────────────┘     Target Angle        │           │
+│          │           Pilot Sticks                            ▼           │
+│          │                                           ┌─────────────┐     │
+│          │             Current Rate                  │  RATE LOOP  │     │
+│          └──────────────────────────────────────────▶│    (PID)    │     │
+│                       (Gyro direct)                  └──────┬──────┘     │
+│                                                             │            │
+│                                                             ▼            │
+│                                                      ┌─────────────┐     │
+│     ┌───────────────────────────────────────────────▶│    MIXER    │     │
+│     │                                                │   (Quad-X)  │     │
+│     │  Throttle                                      └──────┬──────┘     │
+│   ┌─┴───────────┐                                           │            │
+│   │  RECEIVER   │                                           ▼            │
+│   │    (PPM)    │                                  ┌─────────────────┐   │
+│   └─────────────┘                                  │  M1  M2  M3  M4 │   │
+│                                                    │     (Motors)    │   │
+│                                                    └─────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Receiver Channels:**
-| Channel | Stick | Goes To | Why |
-|---------|-------|---------|-----|
-| Ch 0 | Roll | Angle Loop → Rate Loop | Self-leveling (returns to level when stick released) |
-| Ch 1 | Pitch | Angle Loop → Rate Loop | Self-leveling (returns to level when stick released) |
-| Ch 2 | Throttle | Mixer directly | No control loop needed - direct power |
-| Ch 3 | Yaw | Rate Loop directly | No heading hold (would need magnetometer) |
+**Key Points:**
+- **Complementary Filter** combines Accelerometer + Gyroscope to get stable angle
+- **Angle Loop** compares pilot's target angle with current angle → outputs target rotation rate
+- **Rate Loop** compares target rate with actual gyro rate (direct from sensor) → outputs motor corrections
+- **Mixer** combines throttle + corrections → individual motor speeds
 
-**Why Yaw bypasses Angle Loop:**
-- **Roll & Pitch** need angle control for self-leveling (drone returns to level when you release sticks)
-- **Yaw** only controls rotation speed, not a target heading angle
-- To hold a specific yaw angle (heading), you'd need a magnetometer (compass) - not implemented
+The system uses a cascaded control structure:
+- Outer loop (Angle) - maintains the desired tilt angle
+- Inner loop (Rate) - handles fast stabilization using gyro data
 
 ### Sensor Fusion: Complementary Filter
 
@@ -278,12 +235,6 @@ This gives us fast response without gyro drift - essential for stable flight.
 
 ---
 
-
----
-
-
----
-
 ## What's Next
 
 Currently working on:
@@ -304,22 +255,14 @@ QuadFC/
 │   └── main.c              # Main flight controller
 ├── lib/
 │   ├── adc/                # Battery monitoring
-│   ├── angle_control/      # Outer loop (Angle PI)
-│   ├── blackbox/           # Flight data logging
+│   ├── angle_control/      # Outer loop
 │   ├── config/             # Settings & storage
 │   ├── imu/                # MPU6050 & sensor fusion
-│   ├── mixer/              # Motor mixing (Quad-X)
+│   ├── mixer/              # Motor mixing
 │   ├── pid/                # PID math
 │   ├── pwm/                # ESC output
-│   ├── rate_control/       # Inner loop (Rate PID)
-│   ├── rx/                 # PPM receiver driver
-│   └── webserver/          # WiFi AP & config server
-├── tools/
-│   └── log_analyzer.py     # Python script for blackbox analysis
-├── assets/
-│   ├── Blackbox_Blockdaigram.png
-│   ├── QuadFc.gif
-│   └── blackbox.csv        # Sample log file
+│   ├── rate_control/       # Inner loop
+│   └── rx/                 # Receiver driver
 ├── platformio.ini
 └── README.md
 ```
@@ -348,4 +291,3 @@ You are free to:
 You are NOT allowed to:
 - Use this in any commercial product
 - Sell this code or products based on it
-

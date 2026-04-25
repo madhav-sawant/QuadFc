@@ -1,3 +1,8 @@
+/**
+ * @file imu.h
+ * @brief MPU6050 IMU driver interface
+ */
+
 #ifndef IMU_H
 #define IMU_H
 
@@ -6,46 +11,31 @@
 #include <stdint.h>
 
 typedef struct {
-  float accel_x_g;
-  float accel_y_g;
-  float accel_z_g;
-  float gyro_x_dps;
-  float gyro_y_dps;
-  float gyro_z_dps;
-  float roll_deg;
-  float pitch_deg;
+  float accel_x_g, accel_y_g, accel_z_g;  // Acceleration in g
+  float gyro_x_dps, gyro_y_dps, gyro_z_dps;  // Angular rate in deg/s
+  float roll_deg, pitch_deg;  // Fused angles in degrees
 } imu_data_t;
 
+
+// Core functions
 esp_err_t imu_init(void);
 void imu_read(float dt_sec);
 const imu_data_t *imu_get_data(void);
+
+// Calibration
 void imu_calibrate_gyro(void);
 void imu_calibrate_accel(void);
-
-// NVS Calibration Storage (uses separate namespace from PID config)
 bool imu_calibration_load_from_nvs(void);
 void imu_calibration_save_to_nvs(void);
-
-// Calibration data structure for external access
-typedef struct {
-  float gyro_bias_x;
-  float gyro_bias_y;
-  float gyro_bias_z;
-  float accel_offset_pitch;
-  float accel_offset_roll;
-} imu_calibration_t;
-
-// Get current calibration values (non-blocking, safe to call anytime)
-void imu_get_calibration(imu_calibration_t *cal);
-
-// Print calibration values to console
-void imu_print_calibration(void);
-
-// Get diagnostic counters
-uint32_t imu_get_i2c_errors(void);
-
-// Auto-level on arm: captures current angle as "level"
-// Call this when arming so drone can take off from any surface
 void imu_set_level_on_arm(void);
+
+// Runtime yaw bias correction (vibration-induced DC offset)
+void imu_update_yaw_bias(uint16_t rc_yaw, uint16_t rc_yaw_center,
+                         uint16_t throttle);
+void imu_reset_yaw_bias(void);
+float imu_get_yaw_bias(void);
+
+// Diagnostics
+uint32_t imu_get_i2c_errors(void);
 
 #endif // IMU_H

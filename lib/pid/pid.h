@@ -1,19 +1,26 @@
+/**
+ * @file pid.h
+ * @brief Generic PID controller with D-term low-pass filter
+ *
+ * Simple, proven PID:
+ * - P: proportional to error
+ * - I: with anti-windup clamp and freeze capability
+ * - D: on measurement (not error), with EMA low-pass filter
+ */
+
 #ifndef PID_H
 #define PID_H
 
 #include <stdbool.h>
-#include <stdint.h>
 
 typedef struct {
-  float kp;
-  float ki;
-  float kd;
+  float kp, ki, kd;
   float output_limit;
   float integral_limit;
   float integral;
-  float prev_measurement;    // For derivative-on-measurement
-  float filtered_derivative; // Low-pass filtered D-term
-  bool integral_frozen;      // Freeze I-term accumulation (e.g., low throttle)
+  float prev_measurement;
+  float filtered_derivative;
+  bool integral_frozen;
 } pid_controller_t;
 
 void pid_init(pid_controller_t *pid, float kp, float ki, float kd,
@@ -22,10 +29,6 @@ void pid_init(pid_controller_t *pid, float kp, float ki, float kd,
 float pid_calculate(pid_controller_t *pid, float setpoint, float measurement,
                     float dt_sec);
 
-// Freeze/unfreeze integral accumulation (prevents windup during ground idle)
 void pid_freeze_integral(pid_controller_t *pid, bool freeze);
-
-// Reset PID state (integral, derivative, previous measurement)
-void pid_reset(pid_controller_t *pid);
 
 #endif // PID_H

@@ -1,5 +1,11 @@
+/**
+ * @file pwm.c
+ * @brief 4-channel PWM output for ESC control using ESP32 LEDC
+ */
+
 #include "pwm.h"
 #include "driver/ledc.h"
+#include "driver/gpio.h"
 #include "esp_err.h"
 
 #define LEDC_TIMER LEDC_TIMER_0
@@ -41,6 +47,7 @@ void pwm_set_motor(int motor_index, uint32_t pulse_width_us) {
   else if (pulse_width_us > PWM_MAX_PULSE_US)
     pulse_width_us = PWM_MAX_PULSE_US;
 
+  // Convert pulse width (µs) to LEDC duty value
   uint32_t max_duty = (1 << PWM_RES_BIT) - 1;
   uint32_t duty = (uint32_t)(((uint64_t)pulse_width_us * (uint64_t)max_duty *
                               (uint64_t)PWM_FREQ_HZ) /
@@ -48,4 +55,11 @@ void pwm_set_motor(int motor_index, uint32_t pulse_width_us) {
 
   ledc_set_duty(LEDC_MODE, motor_channels[motor_index], duty);
   ledc_update_duty(LEDC_MODE, motor_channels[motor_index]);
+}
+
+void pwm_stop_all(void) {
+  for (int i = 0; i < PWM_MOTOR_COUNT; i++) {
+    ledc_stop(LEDC_MODE, motor_channels[i], 0);
+    gpio_set_level(motor_gpios[i], 0);
+  }
 }

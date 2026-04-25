@@ -1,39 +1,35 @@
+/**
+ * @file webserver.c
+ * @brief WiFi AP + HTTP server for PID tuning and blackbox download
+ *
+ * Creates a WiFi access point ("QuadPID") with a web interface for:
+ * - Live flight data display (angles, rates, targets)
+ * - PID gain adjustment and NVS save
+ * - Blackbox CSV download
+ * - IMU recalibration
+ */
+
 #include "webserver.h"
-// #include "../adc/adc.h"
 #include "../blackbox/blackbox.h"
 #include "../config/config.h"
 #include "../imu/imu.h"
 #include "../rate_control/rate_control.h"
+#include "../adc/adc.h"
 
 #include "driver/gpio.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_partition.h"
-#include "esp_system.h"
+
 #include "esp_wifi.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static const char *TAG __attribute__((unused)) = "WEBSERVER";
+// External state from main.c
+extern volatile bool system_armed;
 
-// External system state from main.c
-// External system state from main.c
-extern bool system_armed;
-extern bool error_state;
-// extern char system_status_msg[64]; // Not used currently
-// extern float get_fused_alt(void);
-// extern float get_baro_alt(void);
-// extern float get_laser_alt(void);
-
-// Helper to get battery voltage (we need to implement this or link to adc)
-// For now, use a dummy or declare it if it exists elsewhere
-extern uint16_t adc_read_battery_mv(void); // Assuming this exists in adc.h
-
-
-// Error message string (set by main loop or control loop)
 static char error_msg[128] = "";
 
 #define WIFI_SSID "QuadPID"
@@ -41,7 +37,7 @@ static char error_msg[128] = "";
 
 static httpd_handle_t server = NULL;
 
-// Minimal HTML with live angle display - auto-refreshing
+// HTML page with live data display and PID tuning form
 static const char *HTML_PAGE =
     "<html><head><title>PID</title>"
     "<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
@@ -53,8 +49,39 @@ static const char *HTML_PAGE =
     "solid #ddd;}"
     ".live td:first-child{text-align: left; font-weight: bold; width: 60px;}"
     ".tgt{color:blue;} .act{color:green;} .rate{color:orange;}"
+    "input[type=submit]{background:#4CAF50;color:white;padding:10px "
+    "20px;border:none;border-radius:4px;cursor:pointer;margin:5px "
+    "2px;font-size:14px;font-weight:bold;}"
+    "input[type=submit]:hover{background:#45a049;}"
+    ".btn-danger{background:#f44336 !important;}"
+    ".btn-danger:hover{background:#da190b !important;}"
+    ".btn-warning{background:#ff9800 !important;}"
+    ".btn-warning:hover{background:#e68900 !important;}"
+    ".btn-info{background:#2196F3 !important;}"
+    ".btn-info:hover{background:#0b7dda !important;}"
+    ".actions{background:#e8f4f8;padding:15px;margin:15px "
+    "0;border-radius:6px;border:2px solid #2196F3;}"
+    ".actions h3{margin:0 0 10px 0;color:#1976D2;}"
+    "a{color:#2196F3;text-decoration:none;font-weight:bold;font-size:16px;}"
+    "a:hover{text-decoration:underline;}"
     "</style>"
     "<script>"
+    "var batSpeak=0,batTimer=0;"
+    "function batWarn(mv){"
+    "var now=Date.now();"
+    "if(mv<=0||mv>15000)return;"
+    "var v=mv/1000.0;"
+    "var bs=document.getElementById('batstat');"
+    "if(v<10.5){"
+    "bs.innerText='CHARGE NOW!';bs.style.color='red';bs.style.fontWeight='bold';"
+    "if(now-batTimer>3000){batTimer=now;var u=new SpeechSynthesisUtterance('charge the battery');u.rate=1.2;u.volume=1;speechSynthesis.speak(u);}"
+    "}else if(v<11.0){"
+    "bs.innerText='LOW!';bs.style.color='orangered';bs.style.fontWeight='bold';"
+    "if(now-batTimer>8000){batTimer=now;var u=new SpeechSynthesisUtterance('battery low');u.rate=1.1;u.volume=1;speechSynthesis.speak(u);speechSynthesis.speak(u.cloneNode?new SpeechSynthesisUtterance('battery low'):u);}"
+    "}else if(v<11.5){"
+    "bs.innerText='Warning';bs.style.color='orange';bs.style.fontWeight='bold';"
+    "if(now-batTimer>15000){batTimer=now;var u=new SpeechSynthesisUtterance('battery low');u.rate=1.0;u.volume=0.8;speechSynthesis.speak(u);}"
+    "}else{bs.innerText='OK';bs.style.color='green';bs.style.fontWeight='normal';}}"
     "function upd(){"
     "fetch('/live').then(r=>r.json()).then(d=>{"
     "document.getElementById('ta').innerText=d.ta.toFixed(1);"
@@ -70,6 +97,9 @@ static const char *HTML_PAGE =
     "document.getElementById('laser').innerText=(d.laser*100).toFixed(1);"
     "document.getElementById('armed').innerText=d.armed?'ARMED':'DISARMED';"
     "document.getElementById('armed').style.color=d.armed?'red':'gray';"
+    "document.getElementById('bat').innerText=d.bat;"
+    "document.getElementById('batv').innerText=(d.bat/1000).toFixed(2)+'V';"
+    "batWarn(d.bat);"
     "var errDiv=document.getElementById('errors');"
     "if(d.err && d.err.length>0){errDiv.innerHTML='<b>ERRORS:</b> "
     "'+d.err;errDiv.style.display='block';}"
@@ -78,7 +108,7 @@ static const char *HTML_PAGE =
     "window.onload=upd;"
     "</script>"
     "</head><body>"
-    "<h2>QuadPID - Bat: %d mV</h2>"
+    "<h2>QuadPID - Bat: <span id='bat'>%d</span> mV (<span id='batv'>--</span>) <span id='batstat' style='font-size:14px;margin-left:10px;'>--</span></h2>"
     "<h3>Status: <span id='armed' style='color:gray'>--</span> | %s</h3>"
     "<div class='live'>"
     "<b>Flight Data</b><br>"
@@ -115,14 +145,18 @@ static const char *HTML_PAGE =
     "<hr><b>Angle</b> P:<input name=ap value=%.2f size=6> "
     "I:<input name=ai value=%.2f size=6> "
     "(Self-Level P=Strength, I=Drift Fix)<br><br>"
-    "<input type=submit value=SAVE></form>"
-    "<form method=POST action=/r><input type=submit value=RESET></form>"
-    "<hr><a href=/blackbox>Download Blackbox CSV</a> | "
+    "<input type=submit value='💾 SAVE PID VALUES'></form>"
+    "<form method=POST action=/r style='margin-top:5px;'>"
+    "<input type=submit value='🔄 RESET TO DEFAULTS' class='btn-warning'></form>"
+    "<div class='actions'>"
+    "<h3>📊 Blackbox & Tools</h3>"
+    "<a href=/blackbox style='display:inline-block;background:#2196F3;color:white;padding:12px "
+    "24px;border-radius:4px;margin:5px;text-decoration:none;'>⬇️ Download Blackbox CSV</a><br>"
     "<form style='display:inline' method=POST action=/blackbox/clear>"
-    "<input type=submit value='Clear Blackbox'></form> | "
+    "<input type=submit value='🗑️ Clear Blackbox' class='btn-danger'></form>"
     "<form style='display:inline' method=POST action=/calibrate>"
-    "<input type=submit value='Recalibrate IMU'></form>"
-
+    "<input type=submit value='⚙️ Recalibrate IMU' class='btn-info'></form>"
+    "</div>"
     "<p style='color:green'><b>%s</b></p>"
     "<p style='color:red'><b>%s</b></p>"
     "</body></html>";
@@ -131,15 +165,15 @@ static float parse_float(const char *buf, const char *key, float def) {
   char k[16];
   snprintf(k, sizeof(k), "%s=", key);
   char *p = strstr(buf, k);
-  if (!p)
-    return def;
+  if (!p) return def;
   return strtof(p + strlen(k), NULL);
 }
 
+/* HTTP Handlers */
+
 static esp_err_t get_handler(httpd_req_t *req) {
-  char *html = malloc(4096); // Increased for live display JavaScript
-  if (!html)
-    return ESP_FAIL;
+  char *html = malloc(6144);
+  if (!html) return ESP_FAIL;
 
   const char *msg = "";
   const char *err_msg = "";
@@ -155,7 +189,7 @@ static esp_err_t get_handler(httpd_req_t *req) {
       err_msg = "ERROR: Disarm first before changing settings!";
   }
 
-  snprintf(html, 4096, HTML_PAGE, 11100, "Online", // Dummy battery/status
+  snprintf(html, 6144, HTML_PAGE,(uint16_t)(adc_get_battery_voltage_filtered()*1000.f), "Online",
            sys_cfg.roll_kp, sys_cfg.roll_ki, sys_cfg.roll_kd, sys_cfg.pitch_kp,
            sys_cfg.pitch_ki, sys_cfg.pitch_kd, sys_cfg.yaw_kp, sys_cfg.yaw_ki,
            sys_cfg.yaw_kd, sys_cfg.angle_kp, sys_cfg.angle_ki, msg, err_msg);
@@ -166,7 +200,6 @@ static esp_err_t get_handler(httpd_req_t *req) {
 }
 
 static esp_err_t save_handler(httpd_req_t *req) {
-  // Only allow saving when disarmed
   if (system_armed) {
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/?err=armed");
@@ -176,8 +209,7 @@ static esp_err_t save_handler(httpd_req_t *req) {
 
   char buf[256];
   int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
-  if (len <= 0)
-    return ESP_FAIL;
+  if (len <= 0) return ESP_FAIL;
   buf[len] = 0;
 
   sys_cfg.roll_kp = parse_float(buf, "rp", sys_cfg.roll_kp);
@@ -193,7 +225,7 @@ static esp_err_t save_handler(httpd_req_t *req) {
   sys_cfg.angle_ki = parse_float(buf, "ai", sys_cfg.angle_ki);
 
   config_save_to_nvs();
-  rate_control_init(); // Reload PID gains into controllers
+  rate_control_init();
 
   httpd_resp_set_status(req, "303 See Other");
   httpd_resp_set_hdr(req, "Location", "/?msg=saved");
@@ -202,7 +234,6 @@ static esp_err_t save_handler(httpd_req_t *req) {
 }
 
 static esp_err_t reset_handler(httpd_req_t *req) {
-  // Only allow reset when disarmed
   if (system_armed) {
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/?err=armed");
@@ -212,20 +243,18 @@ static esp_err_t reset_handler(httpd_req_t *req) {
 
   config_load_defaults();
   config_save_to_nvs();
-  rate_control_init(); // Reload PID gains into controllers
+  rate_control_init();
   httpd_resp_set_status(req, "303 See Other");
   httpd_resp_set_hdr(req, "Location", "/?msg=reset");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }
 
-// Blackbox CSV download handler - EXPANDED with all new fields
 static esp_err_t blackbox_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/csv");
   httpd_resp_set_hdr(req, "Content-Disposition",
                      "attachment; filename=blackbox.csv");
 
-  // Send CSV header - with angle data for drift analysis
   const char *header = "angle_roll,angle_pitch,"
                        "gyro_x,gyro_y,gyro_z,"
                        "pid_roll,pid_pitch,pid_yaw,"
@@ -233,10 +262,10 @@ static esp_err_t blackbox_handler(httpd_req_t *req) {
                        "rc_roll,rc_pitch,rc_yaw,"
                        "rc_thr,"
                        "battery_mv,"
-                       "i2c_errors,accel_z_raw\n";
+                       "i2c_errors,accel_z_raw,"
+                       "vbat_comp\n";
   httpd_resp_sendstr_chunk(req, header);
 
-  // Send each entry
   uint16_t count = blackbox_get_count();
   char line[256];
 
@@ -244,30 +273,28 @@ static esp_err_t blackbox_handler(httpd_req_t *req) {
     const blackbox_entry_t *e = blackbox_get_entry(i);
     if (e) {
       snprintf(line, sizeof(line),
-               "%.2f,%.2f,"      // angles
-               "%.2f,%.2f,%.2f," // gyro
-               "%.2f,%.2f,%.2f," // pid
-               "%u,%u,%u,%u,"    // motors
-               "%u,%u,%u,"       // rc roll/pitch/yaw
-               "%u,"             // rc thr
-               "%u,"             // battery
-               "%lu,%.2f\n",     // i2c_errors, accel_z
+               "%.2f,%.2f,"
+               "%.2f,%.2f,%.2f,"
+               "%.2f,%.2f,%.2f,"
+               "%u,%u,%u,%u,"
+               "%u,%u,%u,"
+               "%u,"
+               "%u,"
+               "%lu,%.2f,%.2f\n",
                e->angle_roll, e->angle_pitch, e->gyro_x, e->gyro_y, e->gyro_z,
                e->pid_roll, e->pid_pitch, e->pid_yaw, e->motor[0], e->motor[1],
                e->motor[2], e->motor[3], 
                e->rc_roll, e->rc_pitch, e->rc_yaw,
                e->rc_throttle, e->battery_mv,
-               (unsigned long)e->i2c_errors, e->accel_z_raw);
+               (unsigned long)e->i2c_errors, e->accel_z_raw, e->vbat_comp);
       httpd_resp_sendstr_chunk(req, line);
     }
   }
 
-  // End chunked response
   httpd_resp_sendstr_chunk(req, NULL);
   return ESP_OK;
 }
 
-// Blackbox clear handler
 static esp_err_t blackbox_clear_handler(httpd_req_t *req) {
   blackbox_clear();
   httpd_resp_set_status(req, "303 See Other");
@@ -276,9 +303,7 @@ static esp_err_t blackbox_clear_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// IMU Calibration handler
 static esp_err_t calibrate_handler(httpd_req_t *req) {
-  // Only allow calibration when disarmed
   if (system_armed) {
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/?err=armed");
@@ -286,14 +311,10 @@ static esp_err_t calibrate_handler(httpd_req_t *req) {
     return ESP_OK;
   }
 
-  // Turn LED ON during calibration
-  gpio_set_level(2, 1);
-
+  gpio_set_level(2, 1);  // LED ON during calibration
   imu_calibrate_gyro();
   imu_calibrate_accel();
   imu_calibration_save_to_nvs();
-
-  // Turn LED OFF after calibration
   gpio_set_level(2, 0);
 
   httpd_resp_set_status(req, "303 See Other");
@@ -302,24 +323,22 @@ static esp_err_t calibrate_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// Live data JSON endpoint - returns target/actual RATES
+// Live telemetry data
 static float live_target_roll_rate = 0.0f;
 static float live_target_pitch_rate = 0.0f;
+static float live_target_roll_angle = 0.0f;
+static float live_target_pitch_angle = 0.0f;
 
 void webserver_set_rate_targets(float roll_rate, float pitch_rate) {
   live_target_roll_rate = roll_rate;
   live_target_pitch_rate = pitch_rate;
 }
 
-static float live_target_roll_angle = 0.0f;
-static float live_target_pitch_angle = 0.0f;
-
 void webserver_set_angle_targets(float roll_angle, float pitch_angle) {
   live_target_roll_angle = roll_angle;
   live_target_pitch_angle = pitch_angle;
 }
 
-// Set error message to display on webserver
 void webserver_set_error(const char *msg) {
   if (msg && strlen(msg) > 0) {
     snprintf(error_msg, sizeof(error_msg), "%s", msg);
@@ -328,13 +347,9 @@ void webserver_set_error(const char *msg) {
   }
 }
 
-// External sensor getters from main.c
-extern float get_fused_alt(void);
-extern float get_baro_alt(void);
-extern float get_laser_alt(void);
+
 
 static esp_err_t live_handler(httpd_req_t *req) {
-  // Fetch IMU data
   const imu_data_t *imu = imu_get_data();
   float roll_rate_act = 0.0f, pitch_rate_act = 0.0f;
   float roll_deg = 0.0f, pitch_deg = 0.0f;
@@ -346,13 +361,12 @@ static esp_err_t live_handler(httpd_req_t *req) {
     pitch_deg = imu->pitch_deg;
   }
 
-  // Fetch Sensor Fusion Data
-  float alt_fused = 0.0f; // get_fused_alt();
-  float alt_baro = 0.0f; // get_baro_alt();
-  float alt_laser = 0.0f; // get_laser_alt();
-  uint16_t battery_mv = 11100; // get_battery_mv();
+  float alt_fused = 0.0f;
+  float alt_baro = 0.0f;
+  float alt_laser = 0.0f;
+  uint16_t battery_mv =(uint16_t)(adc_get_battery_voltage_filtered()*1000.0f);
 
-  char json[768]; // Increased buffer size for errors
+  char json[768];
   snprintf(json, sizeof(json),
            "{\"tr\":%.2f,\"tp\":%.2f,\"ta\":%.2f,\"tm\":%.2f,"
            "\"rr\":%.2f,\"rp\":%.2f,"
@@ -372,22 +386,17 @@ static esp_err_t live_handler(httpd_req_t *req) {
 static void start_server(void) {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.core_id = 0;
-  cfg.stack_size = 8192;     // Increased for blackbox CSV
-  cfg.max_uri_handlers = 10; // Increased for live endpoint
+  cfg.stack_size = 8192;
+  cfg.max_uri_handlers = 10;
 
   if (httpd_start(&server, &cfg) == ESP_OK) {
     httpd_uri_t get = {.uri = "/", .method = HTTP_GET, .handler = get_handler};
-    httpd_uri_t save = {
-        .uri = "/s", .method = HTTP_POST, .handler = save_handler};
-    httpd_uri_t reset = {
-        .uri = "/r", .method = HTTP_POST, .handler = reset_handler};
-    httpd_uri_t blackbox = {
-        .uri = "/blackbox", .method = HTTP_GET, .handler = blackbox_handler};
-    httpd_uri_t blackbox_clr = {.uri = "/blackbox/clear",
-                                .method = HTTP_POST,
-                                .handler = blackbox_clear_handler};
-    httpd_uri_t live = {
-        .uri = "/live", .method = HTTP_GET, .handler = live_handler};
+    httpd_uri_t save = {.uri = "/s", .method = HTTP_POST, .handler = save_handler};
+    httpd_uri_t reset = {.uri = "/r", .method = HTTP_POST, .handler = reset_handler};
+    httpd_uri_t blackbox = {.uri = "/blackbox", .method = HTTP_GET, .handler = blackbox_handler};
+    httpd_uri_t blackbox_clr = {.uri = "/blackbox/clear", .method = HTTP_POST, .handler = blackbox_clear_handler};
+    httpd_uri_t live = {.uri = "/live", .method = HTTP_GET, .handler = live_handler};
+    httpd_uri_t recal = {.uri = "/calibrate", .method = HTTP_POST, .handler = calibrate_handler};
 
     httpd_register_uri_handler(server, &get);
     httpd_register_uri_handler(server, &save);
@@ -395,9 +404,6 @@ static void start_server(void) {
     httpd_register_uri_handler(server, &blackbox);
     httpd_register_uri_handler(server, &blackbox_clr);
     httpd_register_uri_handler(server, &live);
-
-    httpd_uri_t recal = {
-        .uri = "/calibrate", .method = HTTP_POST, .handler = calibrate_handler};
     httpd_register_uri_handler(server, &recal);
   }
 }
@@ -436,12 +442,9 @@ void webserver_init(void) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wcfg));
   ESP_ERROR_CHECK(esp_wifi_start());
   
-  // Reduce WiFi TX power to MINIMUM to prevent overheating (impacts IMU readings)
-  // Default: 20dBm (100mW), Reduced: 2dBm (1.6mW) = MINIMUM POWER
-  // Range ~8-10m only, but ZERO heat from WiFi
-  ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(8)); // 8 = 2dBm (units are 0.25dBm, so 8*0.25=2dBm)
+  // Minimum TX power to prevent heat affecting IMU
+  ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(8));  // 2dBm
   
   printf("WiFi Started! SSID: %s, Pass: %s\n", WIFI_SSID, WIFI_PASS);
-  printf("WiFi TX Power: 2dBm (MINIMUM - for zero heat)\n");
-  printf("Webserver listening on http://192.168.4.1\n");
+  printf("Webserver: http://192.168.4.1\n");
 }

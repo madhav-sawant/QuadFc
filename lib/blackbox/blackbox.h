@@ -1,3 +1,8 @@
+/**
+ * @file blackbox.h
+ * @brief Flight data recorder
+ */
+
 #ifndef BLACKBOX_H
 #define BLACKBOX_H
 
@@ -5,7 +10,7 @@
 #include <stdint.h>
 
 #define BLACKBOX_MAX_ENTRIES 2000
-#define BLACKBOX_LOG_DIVIDER 3  // 250Hz / 3 = 83Hz logging rate
+#define BLACKBOX_LOG_DIVIDER 3  // 250Hz / 3 = ~83Hz logging rate
 
 typedef struct __attribute__((packed)) {
   float angle_roll, angle_pitch;
@@ -16,6 +21,7 @@ typedef struct __attribute__((packed)) {
   uint16_t battery_mv;
   uint32_t i2c_errors;
   float accel_z_raw;
+  float vbat_comp;
 } blackbox_entry_t;
 
 void blackbox_init(void);
@@ -27,4 +33,3 @@ void blackbox_start(void);
 void blackbox_stop(void);
 
 #endif // BLACKBOX_H
-

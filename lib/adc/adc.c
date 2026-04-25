@@ -1,103 +1,75 @@
 /**
  * @file adc.c
- * @brief Battery voltage monitoring implementation
- * 
- * Reads battery voltage using ADC with voltage divider
- * - Uses ESP32 calibration for accuracy
- * - Averages 64 samples to reduce noise
- * - Applies IIR filter for stable readings
+ * @brief Battery voltage monitoring via ESP32 ADC with calibration
  */
 
 #include "adc.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc_cal.h"
 
-#include <stdio.h>
+static esp_adc_cal_characteristics_t adc_chars;
 
-static adc_oneshot_unit_handle_t adc1_handle;
-static adc_cali_handle_t adc_cali_handle = NULL;
-static bool cali_enabled = false;
+// IIR filter for raw ADC readings
+static uint32_t filtered_adc = 0;
+#define IIR_ALPHA_NUM 1
+#define IIR_ALPHA_DEN 8
 
 void adc_init(void) {
-  // 1. Init ADC Unit
-  adc_oneshot_unit_init_cfg_t init_config = {
-      .unit_id = ADC_UNIT,
-  };
-  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, &adc1_handle));
+  adc1_config_width(ADC_BITWIDTH);
+  adc1_config_channel_atten(ADC_CHAN, ADC_ATTEN);
 
-  // 2. Config Channel
-  adc_oneshot_chan_cfg_t config = {
-      .bitwidth = ADC_WIDTH,
-      .atten = ADC_ATTEN,
-  };
-  ESP_ERROR_CHECK(
-      adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL, &config));
-
-  // 3. Init ADC Calibration (uses factory eFuse data)
-  adc_cali_line_fitting_config_t cali_config = {
-      .unit_id = ADC_UNIT,
-      .atten = ADC_ATTEN,
-      .bitwidth = ADC_WIDTH,
-  };
-  esp_err_t ret =
-      adc_cali_create_scheme_line_fitting(&cali_config, &adc_cali_handle);
-  if (ret == ESP_OK) {
-    cali_enabled = true;
-    printf("[ADC] Calibration enabled (eFuse line fitting)\n");
-  } else {
-    cali_enabled = false;
-    printf("[ADC] WARNING: Calibration not available, using raw conversion\n");
-  }
+  esp_adc_cal_characterize(ADC_UNIT, ADC_ATTEN, ADC_BITWIDTH, 1100,
+                           &adc_chars);
+  filtered_adc = 0;
 }
 
-// IIR filter state
-static uint16_t adc_filtered_raw = 0;
-
+// Read raw ADC with 64-sample averaging + IIR filter
 static uint16_t adc_read_raw(void) {
-  int raw_val = 0;
   uint32_t sum = 0;
-
-  // Average 64 samples to reduce noise
   for (int i = 0; i < 64; i++) {
-    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL, &raw_val));
-    sum += raw_val;
+    sum += adc1_get_raw(ADC_CHAN);
   }
+  uint32_t avg = sum / 64;
 
-  uint16_t current = (uint16_t)(sum / 64);
-
-  // Apply IIR low-pass filter for stability
-  // New reading contributes 1/16, old value contributes 15/16
-  if (adc_filtered_raw == 0) {
-    adc_filtered_raw = current;
+  if (filtered_adc == 0) {
+    filtered_adc = avg;
   } else {
-    adc_filtered_raw =
-        (current >> 4) + (adc_filtered_raw - (adc_filtered_raw >> 4));
+    filtered_adc =
+        filtered_adc + (IIR_ALPHA_NUM * ((int32_t)avg - (int32_t)filtered_adc)) /
+                            IIR_ALPHA_DEN;
   }
-
-  return adc_filtered_raw;
+  return (uint16_t)filtered_adc;
 }
 
+// Convert raw ADC to millivolts using ESP-IDF calibration
 static uint16_t adc_read_voltage(uint16_t raw) {
-  if (cali_enabled) {
-    // Use ESP32 calibration for accurate voltage
-    int voltage_mv = 0;
-    adc_cali_raw_to_voltage(adc_cali_handle, (int)raw, &voltage_mv);
-    return (uint16_t)voltage_mv;
-  }
-
-  // Fallback: simple linear conversion
-  uint16_t voltage = (raw * 3300) / 4095;
-  return voltage;
+  uint32_t voltage = esp_adc_cal_raw_to_voltage(raw, &adc_chars);
+  return (uint16_t)voltage;
 }
 
-uint16_t adc_read_battery_voltg(void) {
+// Float EMA for smooth voltage output (used by voltage compensation)
+static float battery_voltage_filtered = 0.0f;
+#define VBAT_LPF_ALPHA 0.2f  // ~5s time constant at 1Hz update
+
+uint16_t adc_read_battery_voltage(void) {
   uint16_t raw = adc_read_raw();
   uint16_t adc_mv = adc_read_voltage(raw);
 
-  // Scale up using voltage divider ratio
+  // Scale by voltage divider ratio
   uint32_t battery_mv =
       ((uint32_t)adc_mv * VOLTAGE_SCALE_MV) / VOLTAGE_SCALE_DIV;
 
+  // Update float EMA for compensation output
+  float volts = (float)battery_mv / 1000.0f;
+  if (battery_voltage_filtered < 1.0f) {
+    battery_voltage_filtered = volts;  // Seed on first read
+  } else {
+    battery_voltage_filtered = VBAT_LPF_ALPHA * volts +
+                               (1.0f - VBAT_LPF_ALPHA) * battery_voltage_filtered;
+  }
+
   return (uint16_t)battery_mv;
+}
+
+float adc_get_battery_voltage_filtered(void) {
+  return battery_voltage_filtered;
 }

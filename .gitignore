@@ -1,0 +1,16 @@
+# PlatformIO
+.pio/
+
+# Python virtual environment
+.venv/
+
+# VSCode
+.vscode/
+
+# Build artifacts
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.map

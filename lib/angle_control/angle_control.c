@@ -27,8 +27,8 @@ void angle_control_init(void) {
 void angle_control_update(float target_roll, float target_pitch,
                           float actual_roll, float actual_pitch, float dt_sec,
                           bool armed, uint16_t throttle) {
-  float roll_error = target_roll - actual_roll;
-  float pitch_error = target_pitch - actual_pitch;
+  float raw_roll_error = target_roll - actual_roll;
+float raw_pitch_error = target_pitch - actual_pitch;
 
   // Smooth throttle authority ramp (1100-1300µs)
   // Fades corrections to zero at idle to avoid steps.
@@ -40,9 +40,8 @@ void angle_control_update(float target_roll, float target_pitch,
   }
 
   // Scale errors smoothly without hard deadband
-  roll_error  *= throttle_factor;
-  pitch_error *= throttle_factor;
-
+ float roll_error  = raw_roll_error  * throttle_factor;
+float pitch_error = raw_pitch_error * throttle_factor;
   // I-term accumulation logic
   if (!armed) {
     i_roll_accum = 0.0f;
@@ -50,11 +49,11 @@ void angle_control_update(float target_roll, float target_pitch,
   } else if (sys_cfg.angle_ki > 0.0f && throttle > ANGLE_I_THROTTLE_MIN) {
     float max_i_accum = MAX_ANGLE_I / sys_cfg.angle_ki;
 
-    i_roll_accum += roll_error * dt_sec;
+    i_roll_accum += raw_roll_error * dt_sec;
     if (i_roll_accum > max_i_accum) i_roll_accum = max_i_accum;
     if (i_roll_accum < -max_i_accum) i_roll_accum = -max_i_accum;
 
-    i_pitch_accum += pitch_error * dt_sec;
+    i_pitch_accum += raw_pitch_error * dt_sec;
     if (i_pitch_accum > max_i_accum) i_pitch_accum = max_i_accum;
     if (i_pitch_accum < -max_i_accum) i_pitch_accum = -max_i_accum;
   }

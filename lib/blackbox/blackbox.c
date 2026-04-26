@@ -69,34 +69,28 @@ void blackbox_init(void) {
 
 void blackbox_log(const blackbox_entry_t *entry) {
   if (log_queue == NULL || entry == NULL || !recording)
-    return;
-
-  // Non-blocking send (never block the control loop)
-  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-  if (xPortInIsrContext()) {
-    xQueueSendFromISR(log_queue, entry, &xHigherPriorityTaskWoken);
-    if (xHigherPriorityTaskWoken) {
-      portYIELD_FROM_ISR();
-    }
-  } else {
-    xQueueSend(log_queue, entry, 0);
-  }
+    return;// ← exit function immediately, don't log anything
+  xQueueSend(log_queue, entry, 0);
+  
 }
 
 void blackbox_clear(void) {
-  bool was_recording = recording;
-  recording = false;
-  vTaskDelay(pdMS_TO_TICKS(10));
+ if (blackbox_task_handle!=NULL)
+ {
+  vTaskSuspend(blackbox_task_handle); //stop before touching the buffer 
+ }
+ if(log_queue!=NULL)
+ {
+  xQueueReset(log_queue);
+ }
+ write_index=0;
+ entry_count=0;
+ recording=false;
 
-  if (log_queue != NULL) {
-    xQueueReset(log_queue);
-  }
-
-  write_index = 0;
-  entry_count = 0;
-  recording = was_recording;
-
+ if (blackbox_task_handle!=NULL)
+ {
+  vTaskResume(blackbox_task_handle);
+ }
   ESP_LOGI(TAG, "Blackbox cleared");
 }
 

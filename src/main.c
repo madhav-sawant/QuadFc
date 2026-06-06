@@ -2,7 +2,7 @@
  * @file main.c
  * @brief Quadcopter Flight Controller - Final Year BE Project
  *
- * @author Madhav Kapse
+ * @author Madhav Sawant
  * @date 2025
  * @version 2.0
  *
